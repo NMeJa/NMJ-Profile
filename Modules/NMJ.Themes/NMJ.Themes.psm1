@@ -259,19 +259,152 @@ if (-not $Global:NMJ_OMP_INITIALIZED -and -not [string]::IsNullOrWhiteSpace($the
     }
 }
 
+function Show-NMJAppearanceHelp {
+    Write-Host @"
+
+NMJ appearance
+  nmj [-Help|-?]
+  nmj theme [-List|-l | -Choose|-c | <name|number>] [-Permanent|-Perm]
+  nmj icon  [-List|-l | -Choose|-c | <name|number>] [-Permanent|-Perm]
+
+Same commands:
+  Set-Theme ...              = nmj theme ...
+  set-icon / Set-Icon ...    = nmj icon ...
+  ff                         reprint FastFetch with the current icon
+
+Examples:
+  nmj theme -l               list Oh My Posh presets
+  nmj theme -c -Perm         pick a prompt theme (fzf) and save it
+  nmj theme 5 -Permanent     tokyonight, persist
+  nmj icon -l                list FastFetch icon packs
+  nmj icon -c                pick an icon pack
+  nmj icon wolf -Perm        save the wolf pack
+
+"@ -ForegroundColor Cyan
+}
+
+function Show-NMJPoshThemeList {
+    $current = (Get-ThemeConfig).main
+    Write-Host "`nOh My Posh presets:" -ForegroundColor Cyan
+    foreach ($k in $Global:PoshThemePresets.Keys) {
+        $name = $Global:PoshThemePresets[$k]
+        $mark = if ($name -eq $current) { ' *' } else { '' }
+        Write-Host ("  {0,2}  {1}{2}" -f $k, $name, $mark)
+    }
+    Write-Host "  (* current)  Any other Oh My Posh theme name or path also works." -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+function Select-NMJPoshThemeInteractive {
+    $rows = foreach ($k in $Global:PoshThemePresets.Keys) {
+        '{0,2}  {1}' -f $k, $Global:PoshThemePresets[$k]
+    }
+    $chosen = $null
+    if (Get-Command fzf -ErrorAction SilentlyContinue) {
+        $chosen = @($rows) | fzf --prompt="Select Oh My Posh theme > " --height=40% --layout=reverse --border
+    }
+    else {
+        Show-NMJPoshThemeList
+        $chosen = Read-Host "Theme number or name"
+    }
+    if ([string]::IsNullOrWhiteSpace($chosen)) { return $null }
+    if ($chosen -match '^\s*(\d+)\b') { return $Matches[1] }
+    return $chosen.Trim()
+}
+
+function Get-NMJIconThemeDirs {
+    $root = Get-FastFetchThemesRoot
+    if (-not (Test-Path -LiteralPath $root)) { return @() }
+    @(Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue)
+}
+
+function Show-NMJIconThemeList {
+    $root = Get-FastFetchThemesRoot
+    $dirs = Get-NMJIconThemeDirs
+    if (-not $dirs -or $dirs.Count -eq 0) {
+        Write-Host "[!] No FastFetch icon themes in: $root" -ForegroundColor Yellow
+        return
+    }
+    $current = (Get-ThemeConfig).icon
+    Write-Host "`nFastFetch icon themes ($root):" -ForegroundColor Cyan
+    foreach ($d in $dirs) {
+        $mark = if ($d.Name -eq $current) { ' *' } else { '' }
+        Write-Host ("  - {0}{1}" -f $d.Name, $mark)
+    }
+    Write-Host "  (* current)" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
+function Select-NMJIconThemeInteractive {
+    $dirs = Get-NMJIconThemeDirs
+    if (-not $dirs -or $dirs.Count -eq 0) {
+        Show-NMJIconThemeList
+        return $null
+    }
+    $chosen = $null
+    if (Get-Command fzf -ErrorAction SilentlyContinue) {
+        $chosen = @($dirs.Name) | fzf --prompt="Select FastFetch icon theme > " --height=40% --layout=reverse --border
+    }
+    else {
+        Show-NMJIconThemeList
+        $chosen = Read-Host "Icon theme name or number"
+    }
+    if ([string]::IsNullOrWhiteSpace($chosen)) { return $null }
+    return $chosen.Trim()
+}
+
 function Set-Theme {
     <#
     .SYNOPSIS
         Switch Oh My Posh theme (active session or permanent).
+    .DESCRIPTION
+        nmj theme / Set-Theme. Use -List, -Choose, or a preset number/name.
+        nmj -? and Set-Theme -? show the same cheat sheet via -Help.
     .EXAMPLE
+        nmj theme -List
+        Set-Theme -Choose -Permanent
         Set-Theme 5
         Set-Theme tokyonight -Permanent
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = 'Help')]
     param(
-        [Parameter(Mandatory, Position = 0)][string]$Name,
-        [Alias('Perm')][switch]$Permanent
+        [Parameter(ParameterSetName = 'ByName', Position = 0, Mandatory)]
+        [string]$Name,
+
+        [Parameter(ParameterSetName = 'List')]
+        [Alias('l')]
+        [switch]$List,
+
+        [Parameter(ParameterSetName = 'Choose')]
+        [Alias('c')]
+        [switch]$Choose,
+
+        [Parameter(ParameterSetName = 'Help')]
+        [Alias('h')]
+        [switch]$Help,
+
+        [Parameter(ParameterSetName = 'ByName')]
+        [Parameter(ParameterSetName = 'Choose')]
+        [Alias('Perm')]
+        [switch]$Permanent
     )
+
+    if ($PSCmdlet.ParameterSetName -eq 'Help' -or $Help) {
+        Show-NMJAppearanceHelp
+        return
+    }
+    if ($List) {
+        Show-NMJPoshThemeList
+        return
+    }
+    if ($Choose) {
+        $picked = Select-NMJPoshThemeInteractive
+        if ([string]::IsNullOrWhiteSpace($picked)) {
+            Write-Host "`n[!] Selection cancelled." -ForegroundColor Yellow
+            return
+        }
+        $Name = $picked
+    }
 
     $targetTheme = $Name
     if ($Global:PoshThemePresets.Contains($Name)) {
@@ -310,12 +443,26 @@ function Invoke-FastFetch {
     #>
     if (Get-Command fastfetch -ErrorAction SilentlyContinue) {
         try {
-            $ffArgs = @()
+            # this changed: --pipe false + no PowerShell pipeline so $1–$9 logo colors survive
+            $ffArgs = @('--pipe', 'false')
             if ($Global:CurrentFastFetchConfig -and (Test-Path -LiteralPath $Global:CurrentFastFetchConfig)) {
                 $ffArgs += @('--config', $Global:CurrentFastFetchConfig)
             }
-            # this changed: Out-Host so the logo is visible during Import-Module / profile load
-            & fastfetch.exe @ffArgs @args | Out-Host
+            $ffArgs += @args
+
+            $prevRendering = $null
+            if ($PSStyle) {
+                $prevRendering = $PSStyle.OutputRendering
+                $PSStyle.OutputRendering = [System.Management.Automation.OutputRendering]::Ansi
+            }
+            try {
+                & fastfetch.exe @ffArgs
+            }
+            finally {
+                if ($null -ne $prevRendering) {
+                    $PSStyle.OutputRendering = $prevRendering
+                }
+            }
         }
         catch { }
     }
@@ -329,12 +476,58 @@ function Set-FastFetchIconTheme {
     <#
     .SYNOPSIS
         Switch FastFetch icon themes. Default root is .nmj/Themes.
+    .DESCRIPTION
+        nmj icon / set-icon / Set-Icon. Use -List, -Choose, or a folder name/number.
+    .EXAMPLE
+        nmj icon -List
+        set-icon -Choose
+        Set-Icon wolf -Permanent
     #>
+    [CmdletBinding(DefaultParameterSetName = 'Help')]
     param(
-        [Parameter(Position = 0)][string]$Name,
-        [Alias('Perm')][switch]$Permanent,
-        [Alias('q')][switch]$Quiet
+        [Parameter(ParameterSetName = 'ByName', Position = 0)]
+        [string]$Name,
+
+        [Parameter(ParameterSetName = 'List')]
+        [Alias('l')]
+        [switch]$List,
+
+        [Parameter(ParameterSetName = 'Choose')]
+        [Alias('c')]
+        [switch]$Choose,
+
+        [Parameter(ParameterSetName = 'Help')]
+        [Alias('h')]
+        [switch]$Help,
+
+        [Parameter(ParameterSetName = 'ByName')]
+        [Parameter(ParameterSetName = 'Choose')]
+        [Alias('Perm')]
+        [switch]$Permanent,
+
+        [Parameter(ParameterSetName = 'ByName')]
+        [Alias('q')]
+        [switch]$Quiet
     )
+
+    if ($PSCmdlet.ParameterSetName -eq 'Help' -or $Help) {
+        Show-NMJAppearanceHelp
+        return
+    }
+    if ($List -or $Name -eq 'list' -or $Name -eq '?') {
+        Show-NMJIconThemeList
+        return
+    }
+    if ($Choose -or [string]::IsNullOrWhiteSpace($Name)) {
+        $picked = Select-NMJIconThemeInteractive
+        if ([string]::IsNullOrWhiteSpace($picked)) {
+            if (-not $Quiet) {
+                Write-Host "`n[!] Selection cancelled." -ForegroundColor Yellow
+            }
+            return
+        }
+        $Name = $picked
+    }
 
     $themesRoot = Get-FastFetchThemesRoot
     if (-not (Test-Path $themesRoot)) {
@@ -345,7 +538,7 @@ function Set-FastFetchIconTheme {
         return
     }
 
-    $themeDirs = Get-ChildItem -Path $themesRoot -Directory -ErrorAction SilentlyContinue
+    $themeDirs = Get-NMJIconThemeDirs
     if (-not $themeDirs -or $themeDirs.Count -eq 0) {
         if (-not $Quiet) {
             Write-Host "[!] No theme folders found inside $themesRoot" -ForegroundColor Yellow
@@ -353,33 +546,15 @@ function Set-FastFetchIconTheme {
         return
     }
 
-    $selectedFolder = $null
-    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -eq 'list' -or $Name -eq '?') {
-        if (Get-Command fzf -ErrorAction SilentlyContinue) {
-            $chosen = $themeDirs.Name | fzf --prompt="Select FastFetch Icon Theme > " --height=40% --layout=reverse --border
-            if ([string]::IsNullOrWhiteSpace($chosen)) {
-                Write-Host "`n[!] Selection cancelled." -ForegroundColor Yellow
-                return
-            }
-            $selectedFolder = $themeDirs | Where-Object { $_.Name -eq $chosen }
-        }
-        else {
-            Write-Host "`nAvailable FastFetch Icon Themes ($themesRoot):" -ForegroundColor Cyan
-            $themeDirs | ForEach-Object { Write-Host " - $($_.Name)" }
-            return
-        }
+    $formattedNum = $Name
+    if ([int]::TryParse($Name, [ref]$null)) {
+        $formattedNum = "{0:D2}" -f [int]$Name
     }
-    else {
-        $formattedNum = $Name
-        if ([int]::TryParse($Name, [ref]$null)) {
-            $formattedNum = "{0:D2}" -f [int]$Name
-        }
-        $selectedFolder = $themeDirs | Where-Object {
-            $_.Name -like "$formattedNum - *" -or
-            $_.Name -eq $Name -or
-            $_.Name -like "*$Name*"
-        } | Select-Object -First 1
-    }
+    $selectedFolder = $themeDirs | Where-Object {
+        $_.Name -like "$formattedNum - *" -or
+        $_.Name -eq $Name -or
+        $_.Name -like "*$Name*"
+    } | Select-Object -First 1
 
     if (-not $selectedFolder) {
         if (-not $Quiet) {
@@ -414,6 +589,78 @@ function Set-FastFetchIconTheme {
 Set-Alias -Name set-icon -Value Set-FastFetchIconTheme -Force -ErrorAction SilentlyContinue
 Set-Alias -Name Set-Icon -Value Set-FastFetchIconTheme -Force -ErrorAction SilentlyContinue
 
+function Invoke-NMJ {
+    <#
+    .SYNOPSIS
+        NMJ appearance dispatcher: prompt themes and FastFetch icons.
+    .DESCRIPTION
+        nmj theme ... and nmj icon ... are the collision-free entry points.
+        -? shows this help. Does not use `set`, which is Set-Variable.
+    .EXAMPLE
+        nmj
+        nmj theme -List
+        nmj icon -Choose -Permanent
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Command,
+
+        [Parameter(Position = 1)]
+        [string]$Name,
+
+        [Alias('l')]
+        [switch]$List,
+
+        [Alias('c')]
+        [switch]$Choose,
+
+        [Alias('h')]
+        [switch]$Help,
+
+        [Alias('Perm')]
+        [switch]$Permanent
+    )
+
+    $noun = if ($Command) { $Command.Trim().ToLowerInvariant() } else { '' }
+
+    if ($Help -or $noun -eq 'help' -or $noun -eq '?' -or (
+            [string]::IsNullOrWhiteSpace($noun) -and -not $List -and -not $Choose -and [string]::IsNullOrWhiteSpace($Name)
+        )) {
+        Show-NMJAppearanceHelp
+        return
+    }
+
+    switch -Regex ($noun) {
+        '^(theme|themes|t|prompt)$' {
+            if ($List) { Set-Theme -List; return }
+            if ($Choose) { Set-Theme -Choose -Permanent:$Permanent; return }
+            if (-not [string]::IsNullOrWhiteSpace($Name)) {
+                Set-Theme -Name $Name -Permanent:$Permanent
+                return
+            }
+            Show-NMJAppearanceHelp
+            return
+        }
+        '^(icon|icons|i|logo)$' {
+            if ($List) { Set-FastFetchIconTheme -List; return }
+            if ($Choose) { Set-FastFetchIconTheme -Choose -Permanent:$Permanent; return }
+            if (-not [string]::IsNullOrWhiteSpace($Name)) {
+                Set-FastFetchIconTheme -Name $Name -Permanent:$Permanent
+                return
+            }
+            Show-NMJAppearanceHelp
+            return
+        }
+        default {
+            Write-Host "[NMJ] Unknown command '$Command'. Use: nmj theme | nmj icon" -ForegroundColor Yellow
+            Show-NMJAppearanceHelp
+        }
+    }
+}
+
+Set-Alias -Name nmj -Value Invoke-NMJ -Force -ErrorAction SilentlyContinue
+
 # this changed: apply saved (or first) icon theme; banner is printed by the profile loader
 if ([string]::IsNullOrWhiteSpace($themeConfig.icon)) {
     $themesRoot = Get-FastFetchThemesRoot
@@ -428,4 +675,4 @@ if (-not [string]::IsNullOrWhiteSpace($themeConfig.icon)) {
     Set-FastFetchIconTheme -Name $themeConfig.icon -Quiet
 }
 
-Export-ModuleMember -Function Set-Theme, Set-FastFetchIconTheme, Invoke-FastFetch, Set-FastFetchThemesFolder, Get-FastFetchThemesRoot -Alias ff, set-icon, Set-Icon
+Export-ModuleMember -Function Set-Theme, Set-FastFetchIconTheme, Invoke-FastFetch, Set-FastFetchThemesFolder, Get-FastFetchThemesRoot, Invoke-NMJ -Alias ff, set-icon, Set-Icon, nmj

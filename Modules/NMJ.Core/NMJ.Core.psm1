@@ -319,9 +319,11 @@ function Show-ProfileHelp {
   Get-AtuinHistory        PowerShell history search wrapper
 
 [🎨 Themes]
-  Set-Theme <name|number> [-Perm]
-  set-icon / Set-Icon     FastFetch icon themes
-  ff                      Run FastFetch with current theme
+  nmj                     Appearance help
+  nmj theme -l / -c       List or pick Oh My Posh prompt themes
+  nmj icon  -l / -c       List or pick FastFetch icon packs
+  Set-Theme / set-icon    Same commands (legacy names)
+  ff                      Run FastFetch with current icon
 
 [🚀 Shortcuts]
   Defined in `$HOME\.nmj\shortcuts.json`
