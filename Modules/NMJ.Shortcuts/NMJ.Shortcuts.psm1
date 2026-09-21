@@ -1,7 +1,8 @@
 # =====================================================================
 # NMJ.Shortcuts — JSON-driven custom commands / aliases
 # File: $HOME\.nmj\shortcuts.json
-# Supports: path (exe), command (script), aliases, description, hierarchical names
+# Supports: dotted names, spaced subcommands (e.g. ollama logs / ollama.logs),
+#           argument forwarding, help flags (-?, -help), and native command proxying.
 # =====================================================================
 
 $script:ShortcutsFile = Get-NMJConfigPath 'shortcuts.json'
@@ -9,62 +10,234 @@ $script:ShortcutCache = $null
 
 function Initialize-ShortcutsFile {
     if (-not (Test-Path $script:ShortcutsFile)) {
-        $dir = Split-Path $script:ShortcutsFile -Parent
-        if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
-        $default = @{
-            version   = '1.0'
-            shortcuts = @()
+        try {
+            $dir = Split-Path $script:ShortcutsFile -Parent
+            if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+            $default = @{
+                version   = '1.0'
+                shortcuts = @()
+            }
+            $default | ConvertTo-Json -Depth 5 | Set-Content -Path $script:ShortcutsFile -Encoding utf8
         }
-        $default | ConvertTo-Json -Depth 5 | Set-Content -Path $script:ShortcutsFile -Encoding utf8
+        catch { }
     }
 }
 
 function Read-Shortcuts {
     Initialize-ShortcutsFile
     try {
-        $json = Get-Content -Path $script:ShortcutsFile -Raw -ErrorAction Stop
-        $data = $json | ConvertFrom-Json
+        $raw = Get-Content -Path $script:ShortcutsFile -Raw -ErrorAction Stop
+        $data = $raw | ConvertFrom-Json
+        if (-not $data.shortcuts) {
+            $data.shortcuts = @()
+        }
+        else {
+            $data.shortcuts = @($data.shortcuts)
+        }
         $script:ShortcutCache = $data
         return $data
     }
     catch {
-        Write-Host "[NMJ.Shortcuts] Failed to read shortcuts.json: $_" -ForegroundColor Red
+        if ($env:PROFILE_DEBUG) {
+            Write-Host "[NMJ.Shortcuts] Failed to read shortcuts.json: $_" -ForegroundColor DarkGray
+        }
         return @{ version = '1.0'; shortcuts = @() }
     }
 }
 
 function Save-Shortcuts {
     param($Data)
-    $Data | ConvertTo-Json -Depth 6 | Set-Content -Path $script:ShortcutsFile -Encoding utf8
-    $script:ShortcutCache = $Data
+    try {
+        if (-not $Data.shortcuts) { $Data.shortcuts = @() }
+        $Data | ConvertTo-Json -Depth 6 | Set-Content -Path $script:ShortcutsFile -Encoding utf8
+        $script:ShortcutCache = $Data
+    }
+    catch {
+        Write-Host "[NMJ.Shortcuts] Failed to save shortcuts: $_" -ForegroundColor Red
+    }
 }
 
 function Expand-ShortcutPath {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) { return $Value }
-    return (Expand-NMJPath $Value)
+    if (Get-Command Expand-NMJPath -ErrorAction SilentlyContinue) {
+        return (Expand-NMJPath $Value)
+    }
+    return $Value
+}
+
+function Show-SingleShortcutHelp {
+    param($Entry)
+    $desc = if ($Entry.description) { $Entry.description } else { '(no description)' }
+    Write-Host "`nShortcut: $($Entry.name)" -ForegroundColor Cyan
+    Write-Host "Description: $desc"
+    if ($Entry.alias) {
+        $aliasList = @($Entry.alias) -join ', '
+        Write-Host "Aliases: $aliasList"
+    }
+    if ($Entry.path)    { Write-Host "Path: $($Entry.path)" }
+    if ($Entry.command) { Write-Host "Command: $($Entry.command)" }
+    Write-Host ""
+}
+
+function Invoke-NMJShortcutEntry {
+    param(
+        [Parameter(Mandatory)]
+        $Entry,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [object[]]$Arguments = @()
+    )
+
+    if ($Arguments -contains '-?' -or $Arguments -contains '-help' -or $Arguments -contains '--help') {
+        Show-SingleShortcutHelp $Entry
+        return
+    }
+
+    if ($Entry.path) {
+        $exe = Expand-ShortcutPath $Entry.path
+        if (-not (Test-Path $exe)) {
+            Write-Host "[NMJ.Shortcuts] Executable not found: $exe" -ForegroundColor Red
+            return
+        }
+        try {
+            & $exe @Arguments
+        }
+        catch {
+            Write-Host "[NMJ.Shortcuts] Failed to execute '$exe': $_" -ForegroundColor Red
+        }
+    }
+    elseif ($Entry.command) {
+        $cmd = Expand-ShortcutPath $Entry.command
+        try {
+            $sb = [ScriptBlock]::Create($cmd)
+            & $sb @Arguments
+        }
+        catch {
+            Write-Host "[NMJ.Shortcuts] Command execution failed: $_" -ForegroundColor Red
+        }
+    }
+}
+
+function Find-NMJShortcutBySubcommand {
+    param(
+        [string]$Prefix,
+        [string]$SubCommand
+    )
+    $data = Read-Shortcuts
+    foreach ($entry in $data.shortcuts) {
+        $names = @($entry.name) + @($entry.alias)
+        foreach ($name in $names) {
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+            $cleanName = $name.Trim()
+
+            # Matches e.g. "ollama.logs" -> Prefix: "ollama", SubCommand: "logs"
+            if ($cleanName -match "^$([regex]::Escape($Prefix))[.\-\s]+$([regex]::Escape($SubCommand))`$") {
+                return $entry
+            }
+            # Or if alias is simply the subcommand itself
+            if ($cleanName -eq $SubCommand) {
+                return $entry
+            }
+        }
+    }
+    return $null
+}
+
+function Register-PrefixProxy {
+    param([string]$Prefix)
+    if ([string]::IsNullOrWhiteSpace($Prefix) -or $Prefix -match '\s') { return }
+
+    $proxyBlock = {
+        param(
+            [Parameter(ValueFromRemainingArguments = $true)]
+            [object[]]$ProxyArgs
+        )
+
+        if ($ProxyArgs -and $ProxyArgs.Count -gt 0) {
+            $sub = [string]$ProxyArgs[0]
+            $matchedEntry = Find-NMJShortcutBySubcommand -Prefix $Prefix -SubCommand $sub
+            if ($matchedEntry) {
+                $rest = if ($ProxyArgs.Count -gt 1) { $ProxyArgs[1..($ProxyArgs.Count - 1)] } else { @() }
+                Invoke-NMJShortcutEntry -Entry $matchedEntry -Arguments $rest
+                return
+            }
+        }
+
+        # Check if a native executable exists with this prefix name (e.g. ollama.exe)
+        $nativeApp = (Get-Command -Name "$Prefix.exe", $Prefix -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($nativeApp) {
+            & $nativeApp.Source @ProxyArgs
+            return
+        }
+
+        if ($ProxyArgs -and $ProxyArgs.Count -gt 0) {
+            Write-Host "[NMJ.Shortcuts] Unknown subcommand '$($ProxyArgs[0])' for '$Prefix'." -ForegroundColor Yellow
+            Write-Host "Type 'myhelp shortcuts' to view all available custom shortcuts." -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "[NMJ.Shortcuts] '$Prefix' invoked without subcommands, and no native '$Prefix' binary was found in PATH." -ForegroundColor Yellow
+        }
+    }.GetNewClosure()
+
+    Set-Item -Path "Function:global:$Prefix" -Value $proxyBlock -Force
+}
+
+function Register-Shortcut {
+    param($Entry)
+
+    $allNames = @($Entry.name) + @($Entry.alias)
+    $prefixesToRegister = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($n in $allNames) {
+        if ([string]::IsNullOrWhiteSpace($n)) { continue }
+        $n = $n.Trim()
+
+        # Track prefixes for names like 'ollama.logs', 'ollama-logs', 'ollama logs'
+        if ($n -match '^([a-zA-Z0-9_]+)[.\-\s]([a-zA-Z0-9_\-]+)$') {
+            $prefix = $Matches[1]
+            [void]$prefixesToRegister.Add($prefix)
+        }
+
+        # For space-separated names like 'ollama logs', they will be handled by prefix dispatcher
+        if ($n -match '\s') { continue }
+
+        $scriptBlock = {
+            param(
+                [Parameter(ValueFromRemainingArguments = $true)]
+                [object[]]$CallArgs
+            )
+            Invoke-NMJShortcutEntry -Entry $Entry -Arguments $CallArgs
+        }.GetNewClosure()
+
+        # In PowerShell, functions can have dots, underscores, dashes, etc.
+        # Direct registration allows running `ollama.logs` or `ollama-logs` directly from the prompt!
+        Set-Item -Path "Function:global:$n" -Value $scriptBlock -Force
+
+        # Also register dotted/dashed alternatives
+        if ($n -contains '.' -or $n -match '\.') {
+            $dashed = $n -replace '\.', '-'
+            Set-Item -Path "Function:global:$dashed" -Value $scriptBlock -Force
+        }
+        elseif ($n -contains '-' -or $n -match '-') {
+            $dotted = $n -replace '-', '.'
+            Set-Item -Path "Function:global:$dotted" -Value $scriptBlock -Force
+        }
+    }
+
+    # Register root prefix dispatchers
+    foreach ($prefix in $prefixesToRegister) {
+        Register-PrefixProxy -Prefix $prefix
+    }
 }
 
 function New-Shortcut {
     <#
     .SYNOPSIS
-        Create a new shortcut (exe or arbitrary command).
+        Create a new shortcut (executable or arbitrary command script).
     .DESCRIPTION
-        Adds an entry to $HOME\.nmj\shortcuts.json and registers it immediately.
-    .PARAMETER Name
-        Primary name (e.g. ollama.log or unity66). Dots and dashes are allowed.
-    .PARAMETER Path
-        Path to an executable. Supports $HOME$, $LOCALAPPDATA$, etc.
-    .PARAMETER Command
-        Arbitrary PowerShell command string (or scriptblock as string).
-    .PARAMETER Alias
-        One or more additional names that also trigger this shortcut.
-    .PARAMETER Description
-        Shown by -? / -help and in myhelp shortcuts.
+        Adds an entry to $HOME\.nmj\shortcuts.json and registers functions and prefix dispatchers immediately.
     .EXAMPLE
-        New-Shortcut -Name ollama.log -Command 'Get-Content $env:LOCALAPPDATA\Ollama\server.log -Tail 50 -Wait' -Description 'Tail Ollama server log'
-    .EXAMPLE
-        New-Shortcut -Name unity66 -Path 'C:\Program Files\Unity\Hub\Editor\6000.6.0f1\Editor\Unity.exe' -Alias @('u66') -Description 'Launch Unity 6.6'
+        New-Shortcut -Name 'ollama.logs' -Command 'Get-Content $env:LOCALAPPDATA\Ollama\server.log -Tail 50 -Wait' -Alias @('ollama.debugs', 'ollama logs', 'ollama debugs', 'olog') -Description 'Tail Ollama server log'
     #>
     [CmdletBinding()]
     param(
@@ -85,15 +258,14 @@ function New-Shortcut {
     }
 
     $data = Read-Shortcuts
-    $existing = $data.shortcuts | Where-Object { $_.name -eq $Name -or ($_.alias -contains $Name) }
+    $existing = @($data.shortcuts) | Where-Object { $_.name -eq $Name -or ($_.alias -contains $Name) }
     if ($existing -and -not $Force) {
         Write-Host "Shortcut '$Name' already exists. Use -Force to overwrite." -ForegroundColor Yellow
         return
     }
 
-    # Remove old entry if forcing
     if ($existing) {
-        $data.shortcuts = @($data.shortcuts | Where-Object { $_.name -ne $Name })
+        $data.shortcuts = @(@($data.shortcuts) | Where-Object { $_.name -ne $Name })
     }
 
     $entry = [ordered]@{
@@ -104,7 +276,7 @@ function New-Shortcut {
         description = $Description
     }
 
-    $data.shortcuts += $entry
+    $data.shortcuts = @($data.shortcuts) + $entry
     Save-Shortcuts $data
     Register-Shortcut $entry
     Write-Host "Shortcut '$Name' created." -ForegroundColor Green
@@ -113,29 +285,29 @@ function New-Shortcut {
 function Get-Shortcut {
     <#
     .SYNOPSIS
-        List or retrieve shortcuts.
+        List or retrieve shortcuts by name or alias.
     #>
     param([string]$Name)
     $data = Read-Shortcuts
     if ($Name) {
-        return $data.shortcuts | Where-Object {
+        return @($data.shortcuts) | Where-Object {
             $_.name -eq $Name -or ($_.alias -contains $Name)
         }
     }
-    return $data.shortcuts
+    return @($data.shortcuts)
 }
 
 function Remove-Shortcut {
     <#
     .SYNOPSIS
-        Remove a shortcut by name.
+        Remove a shortcut by name or alias.
     #>
     param(
         [Parameter(Mandatory)][string]$Name
     )
     $data = Read-Shortcuts
-    $before = $data.shortcuts.Count
-    $data.shortcuts = @($data.shortcuts | Where-Object {
+    $before = @($data.shortcuts).Count
+    $data.shortcuts = @(@($data.shortcuts) | Where-Object {
         $_.name -ne $Name -and -not ($_.alias -contains $Name)
     })
     if ($data.shortcuts.Count -lt $before) {
@@ -147,65 +319,11 @@ function Remove-Shortcut {
     }
 }
 
-function Register-Shortcut {
-    param($Entry)
-
-    $allNames = @($Entry.name) + @($Entry.alias)
-    foreach ($n in $allNames) {
-        if ([string]::IsNullOrWhiteSpace($n)) { continue }
-
-        # Create a function with a safe name
-        $safeName = $n -replace '[^a-zA-Z0-9_]', '_'
-        $funcName = "Invoke-NMJ_$safeName"
-
-        $scriptBlock = {
-            param(
-                [Parameter(ValueFromRemainingArguments = $true)]
-                [object[]]$Args
-            )
-
-            # Help handling
-            if ($Args -contains '-?' -or $Args -contains '-help' -or $Args -contains '--help') {
-                $desc = $Entry.description
-                if (-not $desc) { $desc = '(no description)' }
-                Write-Host "`nShortcut: $($Entry.name)" -ForegroundColor Cyan
-                Write-Host "Description: $desc"
-                if ($Entry.alias) { Write-Host "Aliases: $($Entry.alias -join ', ')" }
-                if ($Entry.path)    { Write-Host "Path: $($Entry.path)" }
-                if ($Entry.command) { Write-Host "Command: $($Entry.command)" }
-                Write-Host ""
-                return
-            }
-
-            if ($Entry.path) {
-                $exe = Expand-ShortcutPath $Entry.path
-                if (-not (Test-Path $exe)) {
-                    Write-Host "[NMJ] Executable not found: $exe" -ForegroundColor Red
-                    return
-                }
-                & $exe @Args
-            }
-            elseif ($Entry.command) {
-                $cmd = Expand-ShortcutPath $Entry.command
-                # Allow both string commands and simple scriptblocks stored as strings
-                Invoke-Expression $cmd
-            }
-        }.GetNewClosure()
-
-        # Register as a function in the global scope so it is callable
-        Set-Item -Path "Function:global:$funcName" -Value $scriptBlock -Force
-
-        # Also create a simple alias / function with the original name when possible
-        # For names with dots we rely on the dispatcher below
-        if ($n -notmatch '[.\s-]') {
-            Set-Alias -Name $n -Value $funcName -Scope Global -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-# Hierarchical / dotted / dashed dispatcher
-# Allows: ollama.log, ollama log, ollama-debug, ollama.debug
 function Invoke-NMJShortcut {
+    <#
+    .SYNOPSIS
+        Programmatically invoke a shortcut with arguments.
+    #>
     param(
         [Parameter(Mandatory, Position = 0)]
         [string]$Name,
@@ -214,7 +332,7 @@ function Invoke-NMJShortcut {
     )
 
     $data = Read-Shortcuts
-    $entry = $data.shortcuts | Where-Object {
+    $entry = @($data.shortcuts) | Where-Object {
         $_.name -eq $Name -or
         ($_.alias -contains $Name) -or
         $_.name -eq ($Name -replace '-', '.') -or
@@ -222,46 +340,26 @@ function Invoke-NMJShortcut {
     } | Select-Object -First 1
 
     if (-not $entry) {
-        # Try splitting "ollama log" style
         Write-Host "Shortcut '$Name' not found. Use Get-Shortcut or myhelp shortcuts." -ForegroundColor Yellow
         return
     }
 
-    # Re-use the same logic as Register-Shortcut
-    if ($Rest -contains '-?' -or $Rest -contains '-help' -or $Rest -contains '--help') {
-        $desc = $entry.description
-        if (-not $desc) { $desc = '(no description)' }
-        Write-Host "`nShortcut: $($entry.name)" -ForegroundColor Cyan
-        Write-Host "Description: $desc"
-        if ($entry.alias) { Write-Host "Aliases: $($entry.alias -join ', ')" }
-        if ($entry.path)    { Write-Host "Path: $($entry.path)" }
-        if ($entry.command) { Write-Host "Command: $($entry.command)" }
-        Write-Host ""
-        return
-    }
-
-    if ($entry.path) {
-        $exe = Expand-ShortcutPath $entry.path
-        if (-not (Test-Path $exe)) {
-            Write-Host "[NMJ] Executable not found: $exe" -ForegroundColor Red
-            return
-        }
-        & $exe @Rest
-    }
-    elseif ($entry.command) {
-        $cmd = Expand-ShortcutPath $entry.command
-        Invoke-Expression $cmd
-    }
+    Invoke-NMJShortcutEntry -Entry $entry -Arguments $Rest
 }
 
 function Get-NMJShortcutHelp {
+    <#
+    .SYNOPSIS
+        Display all registered shortcuts formatted cleanly.
+    #>
     $data = Read-Shortcuts
-    if (-not $data.shortcuts -or $data.shortcuts.Count -eq 0) {
-        Write-Host "No shortcuts defined yet. Use New-Shortcut to create some." -ForegroundColor Yellow
+    $shortcuts = @($data.shortcuts)
+    if (-not $shortcuts -or $shortcuts.Count -eq 0) {
+        Write-Host "No shortcuts defined yet. Use New-Shortcut to create one." -ForegroundColor Yellow
         return
     }
     Write-Host "`n=== NMJ Shortcuts ===" -ForegroundColor Cyan
-    foreach ($s in $data.shortcuts) {
+    foreach ($s in $shortcuts) {
         $aliases = if ($s.alias) { "  (aliases: $($s.alias -join ', '))" } else { '' }
         $desc = if ($s.description) { $s.description } else { '(no description)' }
         Write-Host ("  {0,-25} {1}{2}" -f $s.name, $desc, $aliases)
@@ -269,14 +367,10 @@ function Get-NMJShortcutHelp {
     Write-Host ""
 }
 
-# Load and register everything on module import
-$data = Read-Shortcuts
-foreach ($entry in $data.shortcuts) {
+# Register all shortcuts on module import
+$initData = Read-Shortcuts
+foreach ($entry in @($initData.shortcuts)) {
     Register-Shortcut $entry
 }
 
-# Make a top-level dispatcher available for dotted names
-# Users can call:  Invoke-NMJShortcut ollama.log
-# or we can later add a more sophisticated parser if needed.
-
-Export-ModuleMember -Function New-Shortcut, Get-Shortcut, Remove-Shortcut, Get-NMJShortcutHelp, Invoke-NMJShortcut
+Export-ModuleMember -Function New-Shortcut, Get-Shortcut, Remove-Shortcut, Get-NMJShortcutHelp, Invoke-NMJShortcut, Find-NMJShortcutBySubcommand, Invoke-NMJShortcutEntry

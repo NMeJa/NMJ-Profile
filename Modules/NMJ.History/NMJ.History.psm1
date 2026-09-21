@@ -1,43 +1,46 @@
 # =====================================================================
 # NMJ.History — Atuin integration
-# Replaces the old Clear-ConsoleHistory / Sort-ConsoleHistory system.
-# Predictive IntelliSense (PSReadLine History) remains enabled in the profile.
 # =====================================================================
 
 if (Get-Command atuin -ErrorAction SilentlyContinue) {
-    # Initialize Atuin for PowerShell
-    # This sets up Ctrl+R to the Atuin TUI and records commands automatically.
     try {
-        Invoke-Expression (& { (atuin init powershell | Out-String) })
+        Invoke-Expression (& { (atuin init powershell 2>$null | Out-String) })
     }
     catch {
-        Write-Host "[NMJ.History] Failed to init Atuin: $_" -ForegroundColor Yellow
+        if ($env:PROFILE_DEBUG) {
+            Write-Host "[NMJ.History] Failed to init Atuin: $_" -ForegroundColor DarkGray
+        }
     }
 }
-else {
-    # Atuin not yet installed (bootstrap will get it on next -Force or first run).
-    # We silently continue; the old PSReadLine history still works.
-}
 
-# Optional convenience wrappers (thin)
 function Get-AtuinHistory {
     <#
     .SYNOPSIS
         List or search Atuin history.
+    .EXAMPLE
+        Get-AtuinHistory git
+        Get-AtuinHistory -Interactive
     #>
+    [CmdletBinding()]
     param(
+        [Parameter(Position = 0)]
         [string]$Query,
         [switch]$Interactive
     )
     if (-not (Get-Command atuin -ErrorAction SilentlyContinue)) {
-        Write-Host "[NMJ] Atuin is not installed. Run Update-ProfileDependencies -Force" -ForegroundColor Yellow
+        Write-Host "[NMJ] Atuin is not installed. Run: Update-ProfileDependencies -Force" -ForegroundColor Yellow
         return
     }
-    if ($Interactive -or -not $Query) {
-        atuin search
+    try {
+        if ($Interactive -or -not $Query) {
+            atuin search
+        }
+        else {
+            atuin search $Query
+        }
     }
-    else {
-        atuin search $Query
+    catch {
+        Write-Host "[NMJ.History] Atuin search error: $_" -ForegroundColor Yellow
     }
 }
 

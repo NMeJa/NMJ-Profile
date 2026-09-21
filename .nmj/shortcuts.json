@@ -1,4 +1,16 @@
 {
   "version": "1.0",
-  "shortcuts": []
+  "shortcuts": [
+    {
+      "name": "ollama.logs",
+      "command": "Get-Content \"$env:LOCALAPPDATA\\Ollama\\server.log\" -Tail 50 -Wait",
+      "alias": [
+        "ollama.debugs",
+        "ollama logs",
+        "ollama debugs",
+        "olog"
+      ],
+      "description": "Tail Ollama server log"
+    }
+  ]
 }

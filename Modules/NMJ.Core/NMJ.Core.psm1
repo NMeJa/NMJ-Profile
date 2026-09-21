@@ -2,31 +2,38 @@
 # NMJ.Core — Bootstrap, shared helpers, Ollama warning logic, help aggregator
 # =====================================================================
 
-$script:BootstrapMarker     = Join-Path $HOME '.ps_profile_bootstrap_v2'
-$script:OllamaWarnCounter   = Join-Path $env:NMJ_CONFIG 'ollama_warn_count.txt'
-$script:MaxOllamaWarnings   = 3
+$script:BootstrapMarker   = Join-Path $HOME '.ps_profile_bootstrap_v2'
+$configDir                = if ($env:NMJ_CONFIG) { $env:NMJ_CONFIG } else { Join-Path $HOME '.nmj' }
+$script:OllamaWarnCounter = Join-Path $configDir 'ollama_warn_count.txt'
+$script:MaxOllamaWarnings = 3
 
 # ---------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------
 function Get-NMJConfigPath {
     param([string]$Name = 'shortcuts.json')
-    Join-Path $env:NMJ_CONFIG $Name
+    $base = if ($env:NMJ_CONFIG) { $env:NMJ_CONFIG } else { Join-Path $HOME '.nmj' }
+    Join-Path $base $Name
 }
 
 function Expand-NMJPath {
     <#
     .SYNOPSIS
-        Expands dynamic tags in paths ($HOME$, $LOCALAPPDATA$, $APPDATA$, $TEMP$, $USERPROFILE$).
+        Expands dynamic tags in paths ($HOME$, $LOCALAPPDATA$, $APPDATA$, $TEMP$, $USERPROFILE$, $USERNAME$).
     #>
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter()]
+        [AllowEmptyString()]
+        [string]$Path
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
     $expanded = $Path
-    $expanded = $expanded.Replace('$HOME$', $HOME)
-    $expanded = $expanded.Replace('$USERPROFILE$', $env:USERPROFILE)
-    $expanded = $expanded.Replace('$LOCALAPPDATA$', $env:LOCALAPPDATA)
-    $expanded = $expanded.Replace('$APPDATA$', $env:APPDATA)
-    $expanded = $expanded.Replace('$TEMP$', $env:TEMP)
-    $expanded = $expanded.Replace('$USERNAME$', $env:USERNAME)
+    if ($HOME)             { $expanded = $expanded.Replace('$HOME$', $HOME) }
+    if ($env:USERPROFILE)  { $expanded = $expanded.Replace('$USERPROFILE$', $env:USERPROFILE) }
+    if ($env:LOCALAPPDATA) { $expanded = $expanded.Replace('$LOCALAPPDATA$', $env:LOCALAPPDATA) }
+    if ($env:APPDATA)      { $expanded = $expanded.Replace('$APPDATA$', $env:APPDATA) }
+    if ($env:TEMP)         { $expanded = $expanded.Replace('$TEMP$', $env:TEMP) }
+    if ($env:USERNAME)     { $expanded = $expanded.Replace('$USERNAME$', $env:USERNAME) }
     return $expanded
 }
 
@@ -36,7 +43,7 @@ function Write-NMJWarning {
 }
 
 # ---------------------------------------------------------------------
-# Ollama presence check with 3-warning limit
+# Ollama presence check
 # ---------------------------------------------------------------------
 function Test-OllamaInstalled {
     return [bool](Get-Command ollama -ErrorAction SilentlyContinue)
@@ -44,48 +51,53 @@ function Test-OllamaInstalled {
 
 function Get-OllamaWarnCount {
     if (Test-Path $script:OllamaWarnCounter) {
-        $raw = Get-Content $script:OllamaWarnCounter -ErrorAction SilentlyContinue
-        $count = 0
-        if ([int]::TryParse($raw, [ref]$count)) { return $count }
+        try {
+            $raw = Get-Content $script:OllamaWarnCounter -ErrorAction SilentlyContinue
+            $count = 0
+            if ([int]::TryParse($raw, [ref]$count)) { return $count }
+        }
+        catch { }
     }
     return 0
 }
 
 function Set-OllamaWarnCount {
     param([int]$Value)
-    $dir = Split-Path $script:OllamaWarnCounter -Parent
-    if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
-    Set-Content -Path $script:OllamaWarnCounter -Value $Value -Encoding utf8
+    try {
+        $dir = Split-Path $script:OllamaWarnCounter -Parent
+        if (-not (Test-Path $dir)) { New-Item -Path $dir -ItemType Directory -Force | Out-Null }
+        Set-Content -Path $script:OllamaWarnCounter -Value $Value -Encoding utf8 -ErrorAction SilentlyContinue
+    }
+    catch { }
 }
 
 function Assert-OllamaAvailable {
     <#
     .SYNOPSIS
-        Called by AI commands. Always warns if Ollama is missing.
+        Called by AI commands. Warns cleanly only when an AI command is explicitly executed.
     #>
     if (Test-OllamaInstalled) { return $true }
 
-    Write-NMJWarning "Ollama is not installed or not in PATH." 'Red'
-    Write-Host "  Install from https://ollama.com  then restart the terminal." -ForegroundColor DarkYellow
-    Write-Host "  After install, pull a model:  ollama pull qwen2.5-coder:7b" -ForegroundColor DarkYellow
+    Write-NMJWarning "Ollama is not installed or not in PATH." 'Yellow'
+    Write-Host "  Install from https://ollama.com then restart terminal." -ForegroundColor DarkGray
+    Write-Host "  After install, pull a model:  ollama pull qwen2.5-coder:7b" -ForegroundColor DarkGray
     return $false
 }
 
 function Show-OllamaStartupWarning {
     <#
     .SYNOPSIS
-        Called once per profile load. Warns at most 3 times, then stops.
+        Silent on standard startup. Only outputs warning if $env:PROFILE_DEBUG is enabled.
     #>
     if (Test-OllamaInstalled) { return }
 
-    $count = Get-OllamaWarnCount
-    if ($count -ge $script:MaxOllamaWarnings) { return }
-
-    $remaining = $script:MaxOllamaWarnings - $count - 1
-    Write-NMJWarning "Ollama is not installed (warning $($count + 1)/$($script:MaxOllamaWarnings))."
-    Write-Host "  This warning will be shown $remaining more time(s), then silenced." -ForegroundColor DarkYellow
-    Write-Host "  Install: https://ollama.com   |   Then: ollama pull qwen2.5-coder:7b" -ForegroundColor DarkYellow
-    Set-OllamaWarnCount ($count + 1)
+    if ($env:PROFILE_DEBUG) {
+        $count = Get-OllamaWarnCount
+        if ($count -ge $script:MaxOllamaWarnings) { return }
+        $remaining = $script:MaxOllamaWarnings - $count - 1
+        Write-NMJWarning "[DEBUG] Ollama is not installed ($($count + 1)/$($script:MaxOllamaWarnings))."
+        Set-OllamaWarnCount ($count + 1)
+    }
 }
 
 # ---------------------------------------------------------------------
@@ -98,7 +110,9 @@ function Update-ProfileDependencies {
     if ((Test-Path $script:BootstrapMarker) -and -not $Force) { return }
 
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-NMJWarning "winget not found - skipping automatic tool install. Install 'App Installer' from Microsoft Store, then run Update-ProfileDependencies -Force."
+        if ($Force) {
+            Write-NMJWarning "winget not found. Install 'App Installer' from Microsoft Store, then run Update-ProfileDependencies -Force."
+        }
         return
     }
 
@@ -115,55 +129,77 @@ function Update-ProfileDependencies {
         'rg'         = 'BurntSushi.ripgrep.MSVC'
         'gsudo'      = 'gerardog.gsudo'
         'uv'         = 'astral-sh.uv'
-        'atuin'      = 'Atuinsh.Atuin'          # new
+        'atuin'      = 'Atuinsh.Atuin'
     }
 
-    # Everything GUI
-    if (-not (winget list --id voidtools.Everything -e 2>$null | Select-String 'voidtools.Everything')) {
-        Write-Host "  Installing Everything (voidtools.Everything)..." -ForegroundColor DarkCyan
-        winget install -e --id voidtools.Everything --accept-source-agreements --accept-package-agreements --silent | Out-Null
+    try {
+        # Everything GUI
+        $hasEverything = winget list --id voidtools.Everything -e 2>$null | Select-String 'voidtools.Everything'
+        if (-not $hasEverything) {
+            Write-Host "  Installing Everything (voidtools.Everything)..." -ForegroundColor DarkCyan
+            winget install -e --id voidtools.Everything --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
+        }
     }
+    catch { }
 
     foreach ($tool in $wingetTools.GetEnumerator()) {
         if (-not (Get-Command $tool.Key -ErrorAction SilentlyContinue)) {
             Write-Host "  Installing $($tool.Key) ($($tool.Value))..." -ForegroundColor DarkCyan
-            winget install -e --id $tool.Value --accept-source-agreements --accept-package-agreements --silent | Out-Null
+            try {
+                winget install -e --id $tool.Value --accept-source-agreements --accept-package-agreements --silent 2>$null | Out-Null
+            }
+            catch { }
         }
     }
 
     # PowerShell modules
-    if ((Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue).InstallationPolicy -ne 'Trusted') {
-        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+    try {
+        if ((Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue).InstallationPolicy -ne 'Trusted') {
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+        }
     }
+    catch { }
+
     foreach ($mod in @('PSFzf', 'Terminal-Icons')) {
         if (-not (Get-Module -ListAvailable -Name $mod)) {
             Write-Host "  Installing PowerShell module $mod..." -ForegroundColor DarkCyan
-            Install-Module -Name $mod -Scope CurrentUser -Force -ErrorAction SilentlyContinue
+            try {
+                Install-Module -Name $mod -Scope CurrentUser -Force -ErrorAction SilentlyContinue
+            }
+            catch { }
         }
     }
 
-    # Refresh PATH
-    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $userPath    = [System.Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path    = "$machinePath;$userPath"
+    # Refresh PATH preserving session additions
+    try {
+        $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $userPath    = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+        $allPaths    = ("$machinePath;$userPath;$env:Path" -split ';') | Select-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        $env:Path    = $allPaths -join ';'
+    }
+    catch { }
 
-    New-Item -Path $script:BootstrapMarker -ItemType File -Force | Out-Null
-    Write-Host "Dependency check complete. Restart the shell once if tools were just installed.`n" -ForegroundColor Green
+    try {
+        New-Item -Path $script:BootstrapMarker -ItemType File -Force | Out-Null
+    }
+    catch { }
+
+    Write-Host "Dependency check complete. Restart shell once if tools were just installed.`n" -ForegroundColor Green
 }
 
-# Run bootstrap + Ollama soft warning on every load
+# Run bootstrap check & startup check
 Update-ProfileDependencies
 Show-OllamaStartupWarning
 
 # ---------------------------------------------------------------------
-# Help aggregator (reads comment-based help + Shortcuts JSON)
+# Help aggregator
 # ---------------------------------------------------------------------
 function Show-ProfileHelp {
     <#
     .SYNOPSIS
         Shows a cheat sheet of all NMJ commands and hotkeys.
     .DESCRIPTION
-        Aggregates help from loaded modules and the Shortcuts JSON.
+        Aggregates help from loaded modules and shortcuts.json.
         Usage: myhelp / nmjhelp
                myhelp shortcuts
                myhelp ai
@@ -178,41 +214,43 @@ function Show-ProfileHelp {
 (type myhelp or nmjhelp any time)
 
 [🤖 AI Assistant (Ollama)]
-  askai "..."     Ask a question – answer lands in buffer or is printed
-  fixit           Explain / fix the last error
-  aish            Interactive chat with the current model
-  Note            Requires Ollama + a model (default: qwen2.5-coder:7b)
+  askai "..."       Ask a question – answer lands in buffer or is printed
+  fixit             Explain / fix the last error
+  aish              Interactive chat with the current model
+  Note              Requires Ollama + a model (default: qwen2.5-coder:7b)
 
 [📁 Fuzzy Navigation]
   nf / Find-FuzzyFolder   zoxide first, then Everything + fzf
   z / zi                  plain zoxide
   Ctrl+t                  fuzzy file/dir insert (PSFzf)
-  Alt+c                   fuzzy cd (PSFzf)
+
+[🧰 Modern CLI & Shell]
+  ls → eza, cat → bat, sudo → gsudo, rg
+  ll / lt                 eza detailed / tree
+  uv                      Python package management & completions
 
 [📜 History (Atuin)]
-  Ctrl+R                  Atuin interactive history search (default)
+  Ctrl+R                  Atuin interactive history search
   atuin search            Search history
   atuin history list      List history
-  atuin import powershell Import old PSReadLine history (one-time)
+  Get-AtuinHistory        PowerShell history search wrapper
 
 [🎨 Themes]
   Set-Theme <name|number> [-Perm]
   set-icon / Set-Icon     FastFetch icon themes
   ff                      Run FastFetch with current theme
 
-[🧰 Modern CLI]
-  ls → eza, cat → bat, sudo → gsudo, rg
-  ll / lt                 eza long / tree
-
 [🚀 Shortcuts]
   Defined in `$HOME\.nmj\shortcuts.json`
-  Every shortcut answers -? / -help
-  Use New-Shortcut to add new ones
+  Supports multi-format invocation:
+    ollama.logs / ollama logs / ollama.debugs / ollama debugs
+  Use 'myhelp shortcuts' to list all custom shortcuts.
+  Add new: New-Shortcut -Name <name> -Command <cmd> / -Path <exe>
 
 [⚙️ Dependencies]
   Update-ProfileDependencies -Force
 
-Tip: Use the built-in -? flag on any command for detailed help.
+Tip: Use the built-in -? flag on any shortcut or command for detailed help.
 "@
 
     if ($Section -match 'shortcut|cmd|alias') {
@@ -228,4 +266,4 @@ Tip: Use the built-in -? flag on any command for detailed help.
 Set-Alias -Name myhelp  -Value Show-ProfileHelp -Force -ErrorAction SilentlyContinue
 Set-Alias -Name nmjhelp -Value Show-ProfileHelp -Force -ErrorAction SilentlyContinue
 
-Export-ModuleMember -Function * -Alias *
+Export-ModuleMember -Function Update-ProfileDependencies, Show-ProfileHelp, Get-NMJConfigPath, Expand-NMJPath, Write-NMJWarning, Assert-OllamaAvailable, Test-OllamaInstalled -Alias myhelp, nmjhelp
