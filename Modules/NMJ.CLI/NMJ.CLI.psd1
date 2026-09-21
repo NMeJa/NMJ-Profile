@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '1.1.0'
+    ModuleVersion     = '1.1.1'
     GUID              = 'a5b6c7d8-e9f0-1234-bcde-567890123456'
     Author            = 'NMJ'
     Description       = 'Modern CLI enhancements, completions (uv), tool aliases (eza, bat, gsudo), and PSReadLine setup'

@@ -101,7 +101,12 @@ foreach ($mod in $modules) {
     # this changed: -Force only on reload so first start does not re-parse already-loaded modules
     $alreadyLoaded = [bool](Get-Module -Name $mod)
     $modSw = if ($env:PROFILE_DEBUG) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
-    Import-Module $modPath -Global -DisableNameChecking -ErrorAction SilentlyContinue -Force:$alreadyLoaded
+    try {
+        Import-Module $modPath -Global -DisableNameChecking -ErrorAction Stop -Force:$alreadyLoaded
+    }
+    catch {
+        Write-Host "[NMJ] Failed to load $mod : $($_.Exception.Message)" -ForegroundColor Yellow
+    }
     if ($modSw) {
         $modSw.Stop()
         Write-Host "[NMJ] $mod $($modSw.ElapsedMilliseconds) ms" -ForegroundColor DarkGray

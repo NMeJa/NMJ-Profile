@@ -277,75 +277,135 @@ Show-OllamaStartupWarning
 # ---------------------------------------------------------------------
 # Help aggregator
 # ---------------------------------------------------------------------
+function Test-NMJModulePresent {
+    param([string]$Name)
+    if (Get-Module -Name $Name -ErrorAction SilentlyContinue) { return $true }
+    if ($env:NMJ_ROOT -and (Test-Path (Join-Path $env:NMJ_ROOT $Name))) { return $true }
+    return $false
+}
+
+function Get-NMJHelpCatalog {
+    [ordered]@{
+        header = @"
+NMJ  (nmj help / myhelp / nmjhelp)
+  nmj help                 this page — every installed NMJ module
+  nmj help shortcuts       custom shortcuts.json
+  nmj theme ...            Oh My Posh prompt themes
+  nmj icon ...             FastFetch icon packs
+  nmj theme -h / nmj icon -h
+                           appearance-only help
+"@
+        ai = @"
+[NMJ.AI] Local Ollama
+  askai "..."              ask a question
+  fixit                    explain / fix the last error
+  aish                     interactive chat
+  default model            qwen2.5-coder:7b
+"@
+        nav = @"
+[NMJ.Nav] Fuzzy navigation
+  nf / Find-FuzzyFolder    zoxide first, then Everything + fzf
+  z / zi                   zoxide jump (if zoxide init succeeded)
+  Ctrl+t                   fuzzy file/dir insert (PSFzf)
+"@
+        cli = @"
+[NMJ.CLI] Modern CLI
+  ls → eza                 cat → bat    sudo → gsudo    rg
+  ll / lt                  detailed listing / tree
+  uv                       Python packaging (completions on idle)
+"@
+        history = @"
+[NMJ.History] Atuin
+  typing / ListView        ranked by this directory + prefix (Atuin)
+  Up / Down                PSReadLine history
+  Ctrl+R                   Atuin interactive search
+  Ctrl+Alt+D               forget the current line (no more suggestions)
+  forget / nmj history forget
+                           pick or name a command to forget
+  Get-AtuinHistory         PowerShell wrapper
+"@
+        themes = @"
+[NMJ.Themes] Prompt + FastFetch
+  nmj theme -l / -c        list or pick Oh My Posh themes
+  nmj icon  -l / -c        list or pick FastFetch icons
+  Set-Theme / set-icon     same commands
+  ff                       reprint FastFetch
+  Set-FastFetchThemesFolder <path> [-Permanent]
+"@
+        shortcuts = @"
+[NMJ.Shortcuts] Custom commands
+  New-Shortcut / Get-Shortcut / Remove-Shortcut
+  nmj help shortcuts       list defined shortcuts
+  file: `$HOME\.nmj\shortcuts.json
+  forms: ollama.logs / ollama logs / ollama.debugs
+"@
+        core = @"
+[NMJ.Core] Profile
+  Update-ProfileDependencies [-Force]
+  myhelp / nmjhelp         same as nmj help
+"@
+    }
+}
+
+function Resolve-NMJHelpSection {
+    param([string]$Name)
+    $key = if ($Name) { $Name.Trim().TrimStart('-').ToLowerInvariant() } else { '' }
+    switch -Regex ($key) {
+        '^(ai|ollama|askai|fixit|aish)$' { 'ai' }
+        '^(nav|navigation|fuzzy|nf)$' { 'nav' }
+        '^(cli|shell|eza|ls)$' { 'cli' }
+        '^(history|atuin|forget)$' { 'history' }
+        '^(theme|themes|icon|icons|prompt|appearance|ff)$' { 'themes' }
+        '^(shortcut|shortcuts|cmd|alias)$' { 'shortcuts' }
+        '^(core|profile|deps|dependencies)$' { 'core' }
+        default { $null }
+    }
+}
+
 function Show-ProfileHelp {
     <#
     .SYNOPSIS
-        Shows a cheat sheet of all NMJ commands and hotkeys.
-    .DESCRIPTION
-        Aggregates help from loaded modules and shortcuts.json.
-        Usage: myhelp / nmjhelp
-               myhelp shortcuts
-               myhelp ai
+        Cheat sheet for installed NMJ modules.
     #>
     param(
         [Parameter(Position = 0)]
         [string]$Section
     )
 
-    $helpText = @"
-=== NMJ Commands & Hotkeys ===
-(type myhelp or nmjhelp any time)
-
-[🤖 AI Assistant (Ollama)]
-  askai "..."       Ask a question – answer lands in buffer or is printed
-  fixit             Explain / fix the last error
-  aish              Interactive chat with the current model
-  Note              Requires Ollama + a model (default: qwen2.5-coder:7b)
-
-[📁 Fuzzy Navigation]
-  nf / Find-FuzzyFolder   zoxide first, then Everything + fzf
-  z / zi                  plain zoxide
-  Ctrl+t                  fuzzy file/dir insert (PSFzf)
-
-[🧰 Modern CLI & Shell]
-  ls → eza, cat → bat, sudo → gsudo, rg
-  ll / lt                 eza detailed / tree
-  uv                      Python package management & completions
-
-[📜 History (Atuin)]
-  Ctrl+R                  Atuin interactive history search
-  atuin search            Search history
-  atuin history list      List history
-  Get-AtuinHistory        PowerShell history search wrapper
-
-[🎨 Themes]
-  nmj                     Appearance help
-  nmj theme -l / -c       List or pick Oh My Posh prompt themes
-  nmj icon  -l / -c       List or pick FastFetch icon packs
-  Set-Theme / set-icon    Same commands (legacy names)
-  ff                      Run FastFetch with current icon
-
-[🚀 Shortcuts]
-  Defined in `$HOME\.nmj\shortcuts.json`
-  Supports multi-format invocation:
-    ollama.logs / ollama logs / ollama.debugs / ollama debugs
-  Use 'myhelp shortcuts' to list all custom shortcuts.
-  Add new: New-Shortcut -Name <name> -Command <cmd> / -Path <exe>
-
-[⚙️ Dependencies]
-  Update-ProfileDependencies -Force
-
-Tip: Use the built-in -? flag on any shortcut or command for detailed help.
-"@
-
-    if ($Section -match 'shortcut|cmd|alias') {
-        if (Get-Command Get-NMJShortcutHelp -ErrorAction SilentlyContinue) {
-            Get-NMJShortcutHelp
-            return
-        }
+    $catalog = Get-NMJHelpCatalog
+    $present = [ordered]@{
+        ai        = (Test-NMJModulePresent 'NMJ.AI')
+        nav       = (Test-NMJModulePresent 'NMJ.Nav')
+        cli       = (Test-NMJModulePresent 'NMJ.CLI')
+        history   = (Test-NMJModulePresent 'NMJ.History')
+        themes    = (Test-NMJModulePresent 'NMJ.Themes')
+        shortcuts = (Test-NMJModulePresent 'NMJ.Shortcuts')
+        core      = (Test-NMJModulePresent 'NMJ.Core')
     }
 
-    Write-Host $helpText -ForegroundColor Cyan
+    $wanted = Resolve-NMJHelpSection $Section
+    if ($Section -and -not $wanted) {
+        Write-Host "[NMJ] Unknown help section '$Section'. Try: ai, nav, cli, history, theme, shortcuts, core" -ForegroundColor Yellow
+        return
+    }
+
+    $keys = if ($wanted) { @($wanted) } else { @($present.Keys) }
+
+    if (-not $wanted) {
+        Write-Host "`n$($catalog.header)`n" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host ""
+    }
+
+    foreach ($k in $keys) {
+        if (-not $present[$k]) { continue }
+        Write-Host $catalog[$k] -ForegroundColor Cyan
+        Write-Host ""
+        if ($k -eq 'shortcuts' -and $wanted -and (Get-Command Get-NMJShortcutHelp -ErrorAction SilentlyContinue)) {
+            Get-NMJShortcutHelp
+        }
+    }
 }
 
 Set-Alias -Name myhelp  -Value Show-ProfileHelp -Force -ErrorAction SilentlyContinue

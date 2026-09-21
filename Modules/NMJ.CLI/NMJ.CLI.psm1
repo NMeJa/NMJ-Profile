@@ -71,7 +71,9 @@ Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -MaxTriggerCount 1 -Act
     }
     if (-not (Get-Module -Name PSFzf -ErrorAction SilentlyContinue)) {
         Import-Module PSFzf -ErrorAction SilentlyContinue
+        # this changed: Ctrl+t is fzf insert; Ctrl+R stays Atuin, not PSFzf reverse-history
         Set-PsFzfOption -PSReadlineChordProvider 'Ctrl+t' -ErrorAction SilentlyContinue
+        Remove-PSReadLineKeyHandler -Chord 'Ctrl+r' -ErrorAction SilentlyContinue
     }
     Initialize-NMJUvCompletions
 } | Out-Null
