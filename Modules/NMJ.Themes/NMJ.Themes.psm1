@@ -1,9 +1,9 @@
 # =====================================================================
 # NMJ.Themes — Oh My Posh + FastFetch
+# Themes directory defaults to .nmj/Themes (configurable manually by user)
 # =====================================================================
 
 $themeConfigFile = Join-Path $HOME '.posh_theme'
-$Global:FastFetchThemesRoot = 'D:\OhMyPoshFastFetchThemes'
 
 $Global:PoshThemePresets = [ordered]@{
     '1'  = 'jandedobbeleer'
@@ -20,34 +20,122 @@ $Global:PoshThemePresets = [ordered]@{
 
 function Get-ThemeConfig {
     if (-not (Test-Path $themeConfigFile)) {
-        return @{ main = $Global:PoshThemePresets['1']; icon = '' }
+        return @{ main = $Global:PoshThemePresets['1']; icon = ''; themesRoot = '' }
     }
     try {
         $content = Get-Content -Path $themeConfigFile -Raw -ErrorAction Stop
         if ([string]::IsNullOrWhiteSpace($content)) {
-            return @{ main = $Global:PoshThemePresets['1']; icon = '' }
+            return @{ main = $Global:PoshThemePresets['1']; icon = ''; themesRoot = '' }
         }
         $json = $content | ConvertFrom-Json -ErrorAction Stop
         return @{
-            main = if ($json.main) { $json.main } else { $Global:PoshThemePresets['1'] }
-            icon = if ($json.icon) { $json.icon } else { '' }
+            main       = if ($json.main) { $json.main } else { $Global:PoshThemePresets['1'] }
+            icon       = if ($json.icon) { $json.icon } else { '' }
+            themesRoot = if ($json.themesRoot) { $json.themesRoot } else { '' }
         }
     }
     catch {
         $clean = if ($content) { $content.Trim() } else { $Global:PoshThemePresets['1'] }
-        return @{ main = $clean; icon = '' }
+        return @{ main = $clean; icon = ''; themesRoot = '' }
     }
 }
 
 function Save-ThemeConfig {
-    param([string]$Main, [string]$Icon)
+    param(
+        [string]$Main,
+        [string]$Icon,
+        [string]$ThemesRoot
+    )
     try {
         $current = Get-ThemeConfig
         $newMain = if ($PSBoundParameters.ContainsKey('Main')) { $Main } else { $current.main }
         $newIcon = if ($PSBoundParameters.ContainsKey('Icon')) { $Icon } else { $current.icon }
-        [ordered]@{ main = $newMain; icon = $newIcon } | ConvertTo-Json | Set-Content -Path $themeConfigFile -Encoding utf8 -ErrorAction SilentlyContinue
+        $newRoot = if ($PSBoundParameters.ContainsKey('ThemesRoot')) { $ThemesRoot } else { $current.themesRoot }
+        [ordered]@{
+            main       = $newMain
+            icon       = $newIcon
+            themesRoot = $newRoot
+        } | ConvertTo-Json | Set-Content -Path $themeConfigFile -Encoding utf8 -ErrorAction SilentlyContinue
     }
     catch { }
+}
+
+function Get-FastFetchThemesRoot {
+    <#
+    .SYNOPSIS
+        Resolves the FastFetch icon themes root directory.
+        Priority:
+          1. $env:FASTFETCH_THEMES_ROOT
+          2. Saved config in ~/.posh_theme (.themesRoot)
+          3. $Global:FastFetchThemesRoot (session override)
+          4. .nmj/Themes (under $env:NMJ_CONFIG or $HOME\.nmj\Themes)
+          5. Local repository .nmj/Themes fallback
+          6. Legacy D:\OhMyPoshFastFetchThemes
+    #>
+    if ($env:FASTFETCH_THEMES_ROOT -and (Test-Path $env:FASTFETCH_THEMES_ROOT)) {
+        return (Resolve-Path $env:FASTFETCH_THEMES_ROOT).Path
+    }
+
+    $cfg = Get-ThemeConfig
+    if ($cfg.themesRoot -and (Test-Path $cfg.themesRoot)) {
+        return (Resolve-Path $cfg.themesRoot).Path
+    }
+
+    if ($Global:FastFetchThemesRoot -and (Test-Path $Global:FastFetchThemesRoot)) {
+        return (Resolve-Path $Global:FastFetchThemesRoot).Path
+    }
+
+    # Default: .nmj/Themes
+    $configBase = if ($env:NMJ_CONFIG) { $env:NMJ_CONFIG } else { Join-Path $HOME '.nmj' }
+    $defaultNmjThemes = Join-Path $configBase 'Themes'
+    if (Test-Path $defaultNmjThemes) {
+        return (Resolve-Path $defaultNmjThemes).Path
+    }
+
+    $homeNmjThemes = Join-Path $HOME '.nmj\Themes'
+    if (Test-Path $homeNmjThemes) {
+        return (Resolve-Path $homeNmjThemes).Path
+    }
+
+    if (Test-Path 'D:\OhMyPoshFastFetchThemes') {
+        return 'D:\OhMyPoshFastFetchThemes'
+    }
+
+    return $defaultNmjThemes
+}
+
+function Set-FastFetchThemesFolder {
+    <#
+    .SYNOPSIS
+        Manually set or change the FastFetch icon themes directory.
+    .EXAMPLE
+        Set-FastFetchThemesFolder "D:\MyThemes" -Permanent
+        Set-FastFetchThemesFolder (Join-Path $HOME '.nmj\Themes')
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [string]$Path,
+
+        [Alias('Perm')]
+        [switch]$Permanent
+    )
+
+    if (-not (Test-Path $Path)) {
+        Write-Host "[NMJ.Themes] Directory does not exist: $Path" -ForegroundColor Yellow
+        return
+    }
+
+    $resolved = (Resolve-Path $Path).Path
+    $Global:FastFetchThemesRoot = $resolved
+
+    if ($Permanent) {
+        Save-ThemeConfig -ThemesRoot $resolved
+        Write-Host "Saved FastFetch themes directory to '$resolved' as permanent default." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Set active session FastFetch themes directory to '$resolved'." -ForegroundColor Cyan
+    }
 }
 
 function Resolve-PoshThemePath {
@@ -77,6 +165,7 @@ function Resolve-PoshThemePath {
 $themeConfig = Get-ThemeConfig
 if (-not [string]::IsNullOrWhiteSpace($themeConfig.main) -and (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) {
     try {
+        Import-Module PSReadLine -ErrorAction SilentlyContinue
         $resolvedTheme = Resolve-PoshThemePath $themeConfig.main
         oh-my-posh init pwsh --config $resolvedTheme 2>$null | Invoke-Expression
     }
@@ -152,7 +241,7 @@ Set-Alias -Name ff -Value Invoke-FastFetch -Force -ErrorAction SilentlyContinue
 function Set-FastFetchIconTheme {
     <#
     .SYNOPSIS
-        Switch FastFetch icon themes.
+        Switch FastFetch icon themes. Default root is .nmj/Themes.
     #>
     param(
         [Parameter(Position = 0)][string]$Name,
@@ -160,17 +249,19 @@ function Set-FastFetchIconTheme {
         [Alias('q')][switch]$Quiet
     )
 
-    if (-not (Test-Path $Global:FastFetchThemesRoot)) {
+    $themesRoot = Get-FastFetchThemesRoot
+    if (-not (Test-Path $themesRoot)) {
         if (-not $Quiet) {
-            Write-Host "[!] FastFetch themes folder not found at: $Global:FastFetchThemesRoot" -ForegroundColor Yellow
+            Write-Host "[!] FastFetch themes folder not found at: $themesRoot" -ForegroundColor Yellow
+            Write-Host "    You can change the folder with: Set-FastFetchThemesFolder <path> -Permanent" -ForegroundColor DarkGray
         }
         return
     }
 
-    $themeDirs = Get-ChildItem -Path $Global:FastFetchThemesRoot -Directory -ErrorAction SilentlyContinue
+    $themeDirs = Get-ChildItem -Path $themesRoot -Directory -ErrorAction SilentlyContinue
     if (-not $themeDirs -or $themeDirs.Count -eq 0) {
         if (-not $Quiet) {
-            Write-Host "[!] No theme folders found inside $Global:FastFetchThemesRoot" -ForegroundColor Yellow
+            Write-Host "[!] No theme folders found inside $themesRoot" -ForegroundColor Yellow
         }
         return
     }
@@ -186,7 +277,7 @@ function Set-FastFetchIconTheme {
             $selectedFolder = $themeDirs | Where-Object { $_.Name -eq $chosen }
         }
         else {
-            Write-Host "`nAvailable FastFetch Icon Themes:" -ForegroundColor Cyan
+            Write-Host "`nAvailable FastFetch Icon Themes ($themesRoot):" -ForegroundColor Cyan
             $themeDirs | ForEach-Object { Write-Host " - $($_.Name)" }
             return
         }
@@ -205,7 +296,7 @@ function Set-FastFetchIconTheme {
 
     if (-not $selectedFolder) {
         if (-not $Quiet) {
-            Write-Host "`n[!] Could not find any FastFetch theme matching '$Name'." -ForegroundColor Yellow
+            Write-Host "`n[!] Could not find any FastFetch theme matching '$Name' in $themesRoot." -ForegroundColor Yellow
         }
         return
     }
@@ -241,4 +332,4 @@ if (-not [string]::IsNullOrWhiteSpace($themeConfig.icon)) {
     Set-FastFetchIconTheme -Name $themeConfig.icon -Quiet
 }
 
-Export-ModuleMember -Function Set-Theme, Set-FastFetchIconTheme, Invoke-FastFetch -Alias ff, set-icon, Set-Icon
+Export-ModuleMember -Function Set-Theme, Set-FastFetchIconTheme, Invoke-FastFetch, Set-FastFetchThemesFolder, Get-FastFetchThemesRoot -Alias ff, set-icon, Set-Icon

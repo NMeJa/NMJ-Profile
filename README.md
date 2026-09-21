@@ -9,7 +9,7 @@ $HOME\Documents\PowerShell\
 ├── Microsoft.PowerShell_profile.ps1   ← thin loader (auto-detects local or user Modules)
 └── Modules\
     ├── NMJ.Core\       Bootstrap, helpers, silent startup checks, help aggregator
-    ├── NMJ.Nav\        Fuzzy navigation (zoxide + Everything CLI / fzf)
+    ├── NMJ.Nav\        Fuzzy navigation (zoxide + Everything CLI es.exe / fzf)
     ├── NMJ.CLI\        Modern CLI tools (eza, bat, gsudo), uv completions, PSReadLine
     ├── NMJ.AI\         Local Ollama → askai / fixit / aish
     ├── NMJ.History\    Atuin integration
@@ -17,16 +17,23 @@ $HOME\Documents\PowerShell\
     └── NMJ.Themes\     Oh My Posh + FastFetch
 
 $HOME\.nmj\
-└── shortcuts.json      Single source of truth for custom shortcuts
+├── shortcuts.json      Single source of truth for custom shortcuts
+└── Themes\             FastFetch icon themes (eagle, f14, wolf, etc.)
 ```
 
-## Quick Start
+## Quick Start (Automated)
 
-1. Copy the `Modules` folder to `$HOME\Documents\PowerShell\Modules` (or keep in place; the loader automatically finds `$PSScriptRoot\Modules`)
-2. Copy `Microsoft.PowerShell_profile.ps1` to your `$PROFILE` location  
-   (usually `Documents\PowerShell\Microsoft.PowerShell_profile.ps1`)
-3. Restart terminal (or run `. $PROFILE`)
-4. First run auto-checks missing tools via winget (oh-my-posh, atuin, fzf, es, eza, bat, gsudo, uv, etc.)
+Double-click **`setup.bat`** (or run `.\setup.bat` from terminal) to:
+1. Copy all `Modules` to `$HOME\Documents\PowerShell\Modules\`
+2. Deploy `.nmj` configuration and FastFetch `Themes` to `$HOME\.nmj\`
+3. Automatically back up your existing profile to `Microsoft.PowerShell_profile.ps1.bak`
+4. Deploy the new thin profile loader and validate installation
+
+### Manual Setup
+1. Copy `Modules\` to `$HOME\Documents\PowerShell\Modules\` (or run directly from repo)
+2. Copy `.nmj\` to `$HOME\.nmj\`
+3. Copy `Microsoft.PowerShell_profile.ps1` to your `$PROFILE` location
+4. Restart terminal or run `. $PROFILE`
 
 ---
 
@@ -91,6 +98,13 @@ Paths support environment tags: `$HOME$`, `$LOCALAPPDATA$`, `$APPDATA$`, `$TEMP$
 - `Set-Theme <1-10 | name> [-Perm]` – Presets: `jandedobbeleer`, `if_tea`, `wholespace`, `catppuccin_mocha`, `tokyonight`, `nord`, `gruvbox`, `paradox`, `agnoster`, `catppuccin_frappe`
 - `set-icon [list | number]` – FastFetch icon themes
 - `ff` – Run FastFetch with current theme
+- **Custom FastFetch Themes Folder**:
+  - By default, themes are loaded from `.nmj/Themes` (`$HOME\.nmj\Themes`).
+  - To change the folder manually:
+    ```powershell
+    Set-FastFetchThemesFolder 'D:\MyCustomThemes' -Permanent
+    ```
+  - Or set the `$env:FASTFETCH_THEMES_ROOT` environment variable.
 
 ---
 
