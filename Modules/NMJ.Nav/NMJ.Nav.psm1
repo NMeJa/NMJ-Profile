@@ -2,14 +2,29 @@
 # NMJ.Nav — Fuzzy Navigation (zoxide + Everything CLI / fzf)
 # =====================================================================
 
-# Initialize zoxide silently if present
-if (Get-Command zoxide -ErrorAction SilentlyContinue) {
-    try {
-        Invoke-Expression (& { (zoxide init powershell | Out-String) })
-    }
-    catch {
-        if ($env:PROFILE_DEBUG) {
-            Write-Host "[NMJ.Nav] Failed to initialize zoxide: $_" -ForegroundColor Yellow
+# this changed: skip re-init on . $profile; cache zoxide init script
+if (-not (Get-Command z -ErrorAction SilentlyContinue)) {
+    $zoxideCmd = Get-Command zoxide -ErrorAction SilentlyContinue
+    if ($zoxideCmd) {
+        try {
+            $initFile = $null
+            if (Get-Command Get-NMJCachedInitPath -ErrorAction SilentlyContinue) {
+                $initFile = Get-NMJCachedInitPath -Name 'zoxide' -BinaryPath $zoxideCmd.Source
+                if (-not $initFile) {
+                    $initFile = Set-NMJCachedInit -Name 'zoxide' -Script (zoxide init powershell | Out-String)
+                }
+            }
+            if ($initFile) {
+                . $initFile
+            }
+            else {
+                Invoke-Expression (& { (zoxide init powershell | Out-String) })
+            }
+        }
+        catch {
+            if ($env:PROFILE_DEBUG) {
+                Write-Host "[NMJ.Nav] Failed to initialize zoxide: $_" -ForegroundColor Yellow
+            }
         }
     }
 }

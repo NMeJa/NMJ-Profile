@@ -9,6 +9,21 @@ if ($env:PROFILE_DEBUG) {
     $Global:__ProfileStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 }
 
+# this changed: merge User+Machine PATH first so WinGet tools (atuin, etc.) are found
+try {
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath    = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $seen        = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $merged      = foreach ($part in @($userPath, $machinePath, $env:Path)) {
+        if ([string]::IsNullOrWhiteSpace($part)) { continue }
+        foreach ($p in ($part -split ';')) {
+            if ($p -and $seen.Add($p)) { $p }
+        }
+    }
+    $env:Path = $merged -join ';'
+}
+catch { }
+
 # Auto-detect NMJ_ROOT: prefer local Modules/ if running from repository, else standard Documents
 $localModuleDir = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'Modules' } else { $null }
 if ($localModuleDir -and (Test-Path $localModuleDir)) {
@@ -76,12 +91,32 @@ $modules = @(
 
 foreach ($mod in $modules) {
     $modPath = Join-Path $env:NMJ_ROOT $mod
-    if (Test-Path $modPath) {
-        Import-Module $modPath -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path $modPath)) {
+        if ($env:PROFILE_DEBUG) {
+            Write-Host "[NMJ] Module not found: $modPath" -ForegroundColor Yellow
+        }
+        continue
     }
-    elseif ($env:PROFILE_DEBUG) {
-        Write-Host "[NMJ] Module not found: $modPath" -ForegroundColor Yellow
+
+    # this changed: -Force only on reload so first start does not re-parse already-loaded modules
+    $alreadyLoaded = [bool](Get-Module -Name $mod)
+    $modSw = if ($env:PROFILE_DEBUG) { [System.Diagnostics.Stopwatch]::StartNew() } else { $null }
+    Import-Module $modPath -Global -DisableNameChecking -ErrorAction SilentlyContinue -Force:$alreadyLoaded
+    if ($modSw) {
+        $modSw.Stop()
+        Write-Host "[NMJ] $mod $($modSw.ElapsedMilliseconds) ms" -ForegroundColor DarkGray
     }
+}
+
+# this changed: FastFetch after Import-Module so the banner is not swallowed by module import
+$showBanner = if (Get-Command Test-NMJInteractiveHost -ErrorAction SilentlyContinue) {
+    Test-NMJInteractiveHost
+}
+else {
+    [Environment]::UserInteractive -and $Host.Name -ne 'ServerRemoteHost' -and -not [Console]::IsOutputRedirected
+}
+if ($showBanner -and $Global:CurrentFastFetchConfig -and (Get-Command Invoke-FastFetch -ErrorAction SilentlyContinue)) {
+    Invoke-FastFetch
 }
 
 if ($env:PROFILE_DEBUG -and $Global:__ProfileStopwatch) {

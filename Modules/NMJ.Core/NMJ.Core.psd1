@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '1.0.0'
+    ModuleVersion     = '1.1.0'
     GUID              = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'
     Author            = 'NMJ'
     Description       = 'Core bootstrap, shared helpers and help aggregator for NMJ modules'
@@ -13,6 +13,9 @@
         'Write-NMJWarning'
         'Assert-OllamaAvailable'
         'Test-OllamaInstalled'
+        'Test-NMJInteractiveHost'
+        'Get-NMJCachedInitPath'
+        'Set-NMJCachedInit'
     )
     AliasesToExport   = @('myhelp', 'nmjhelp')
 }

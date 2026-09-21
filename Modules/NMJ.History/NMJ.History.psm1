@@ -2,15 +2,40 @@
 # NMJ.History — Atuin integration
 # =====================================================================
 
-if (Get-Command atuin -ErrorAction SilentlyContinue) {
+function Initialize-NMJAtuin {
+    # this changed: skip re-init when Atuin is already loaded (avoids "replacing it" on . $profile)
+    if (Get-Module -Name Atuin -ErrorAction SilentlyContinue) { return }
+
+    $atuinCmd = Get-Command atuin -ErrorAction SilentlyContinue
+    if (-not $atuinCmd) { return }
+
     try {
-        Invoke-Expression (& { (atuin init powershell 2>$null | Out-String) })
+        $initFile = $null
+        if (Get-Command Get-NMJCachedInitPath -ErrorAction SilentlyContinue) {
+            $initFile = Get-NMJCachedInitPath -Name 'atuin' -BinaryPath $atuinCmd.Source
+            if (-not $initFile) {
+                $initFile = Set-NMJCachedInit -Name 'atuin' -Script (atuin init powershell 2>$null | Out-String)
+            }
+        }
+        if ($initFile) {
+            . $initFile
+        }
+        else {
+            Invoke-Expression (& { (atuin init powershell 2>$null | Out-String) })
+        }
     }
     catch {
         if ($env:PROFILE_DEBUG) {
             Write-Host "[NMJ.History] Failed to init Atuin: $_" -ForegroundColor DarkGray
         }
     }
+}
+
+# this changed: defer Atuin to OnIdle so the ~100ms module build is off the profile clock
+if (Get-Command atuin -ErrorAction SilentlyContinue) {
+    Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -MaxTriggerCount 1 -Action {
+        Initialize-NMJAtuin
+    } | Out-Null
 }
 
 function Get-AtuinHistory {
@@ -31,6 +56,7 @@ function Get-AtuinHistory {
         Write-Host "[NMJ] Atuin is not installed. Run: Update-ProfileDependencies -Force" -ForegroundColor Yellow
         return
     }
+    Initialize-NMJAtuin
     try {
         if ($Interactive -or -not $Query) {
             atuin search
@@ -44,4 +70,4 @@ function Get-AtuinHistory {
     }
 }
 
-Export-ModuleMember -Function Get-AtuinHistory
+Export-ModuleMember -Function Get-AtuinHistory, Initialize-NMJAtuin

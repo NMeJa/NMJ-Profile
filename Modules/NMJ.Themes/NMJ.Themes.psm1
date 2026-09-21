@@ -156,15 +156,107 @@ function Resolve-PoshThemePath {
     return $ThemeNameOrPath
 }
 
+function Get-NMJOhMyPoshExe {
+    # this changed: the WindowsApps alias is a 0-byte stub that swallows `init` stdout
+    if ($Global:NMJ_OMP_EXE -and (Test-Path -LiteralPath $Global:NMJ_OMP_EXE) -and (Get-Item -LiteralPath $Global:NMJ_OMP_EXE).Length -gt 0) {
+        return $Global:NMJ_OMP_EXE
+    }
+
+    $cacheFile = $null
+    $configBase = if ($env:NMJ_CONFIG) { $env:NMJ_CONFIG } else { Join-Path $HOME '.nmj' }
+    $cacheFile = Join-Path $configBase 'cache\omp.exe.path'
+
+    if ($cacheFile -and (Test-Path -LiteralPath $cacheFile)) {
+        $cached = (Get-Content -LiteralPath $cacheFile -Raw -ErrorAction SilentlyContinue).Trim()
+        if ($cached -and (Test-Path -LiteralPath $cached) -and (Get-Item -LiteralPath $cached).Length -gt 0) {
+            return $cached
+        }
+    }
+
+    $resolved = $null
+    $cmd = Get-Command oh-my-posh -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source -and (Test-Path -LiteralPath $cmd.Source) -and (Get-Item -LiteralPath $cmd.Source).Length -gt 0) {
+        $resolved = $cmd.Source
+    }
+    else {
+        try {
+            $pkg = Get-AppxPackage -Name 'ohmyposh.cli' -ErrorAction SilentlyContinue
+            if ($pkg -and $pkg.InstallLocation) {
+                $real = Join-Path $pkg.InstallLocation 'oh-my-posh.exe'
+                if (Test-Path -LiteralPath $real) { $resolved = $real }
+            }
+        }
+        catch { }
+    }
+
+    if ($resolved -and $cacheFile) {
+        try {
+            $dir = Split-Path $cacheFile -Parent
+            if (-not (Test-Path -LiteralPath $dir)) {
+                New-Item -Path $dir -ItemType Directory -Force | Out-Null
+            }
+            Set-Content -LiteralPath $cacheFile -Value $resolved -Encoding utf8NoBOM
+        }
+        catch { }
+    }
+
+    return $resolved
+}
+
+function Initialize-NMJPoshPrompt {
+    param([string]$ThemeNameOrPath)
+
+    $exe = Get-NMJOhMyPoshExe
+    if (-not $exe) { return }
+
+    if (-not $env:POSH_THEMES_PATH) {
+        $themeDir = Join-Path (Split-Path $exe -Parent) 'themes'
+        if (Test-Path -LiteralPath $themeDir) {
+            $env:POSH_THEMES_PATH = $themeDir
+        }
+    }
+
+    $config = Resolve-PoshThemePath $ThemeNameOrPath
+    $Global:NMJ_OMP_EXE = $exe
+    $Global:NMJ_OMP_CONFIG = $config
+
+    # this changed: skip `oh-my-posh init` (empty under the MSIX alias) and render via print primary
+    function global:prompt {
+        $ok = $?
+        $lastCode = $global:LASTEXITCODE
+        $status = if ($ok) { 0 } elseif ($lastCode) { $lastCode } else { 1 }
+        $pwdPath = $PWD.ProviderPath
+        $ompArgs = @(
+            'print', 'primary'
+            '--shell', 'pwsh'
+            '--status', "$status"
+            '--pwd', $pwdPath
+            '--pswd', $pwdPath
+        )
+        if ($Global:NMJ_OMP_CONFIG) {
+            $ompArgs += @('--config', $Global:NMJ_OMP_CONFIG)
+        }
+        $rendered = & $Global:NMJ_OMP_EXE @ompArgs
+        $global:LASTEXITCODE = $lastCode
+        if ($rendered) { return $rendered }
+        return "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) "
+    }
+
+    $Global:NMJ_OMP_INITIALIZED = $true
+}
+
 # Load saved theme silently on import
 $themeConfig = Get-ThemeConfig
-if (-not [string]::IsNullOrWhiteSpace($themeConfig.main) -and (Get-Command oh-my-posh -ErrorAction SilentlyContinue)) {
+if (-not $Global:NMJ_OMP_INITIALIZED -and -not [string]::IsNullOrWhiteSpace($themeConfig.main)) {
     try {
         Import-Module PSReadLine -ErrorAction SilentlyContinue
-        $resolvedTheme = Resolve-PoshThemePath $themeConfig.main
-        oh-my-posh init pwsh --config $resolvedTheme 2>$null | Invoke-Expression
+        Initialize-NMJPoshPrompt -ThemeNameOrPath $themeConfig.main
     }
-    catch { }
+    catch {
+        if ($env:PROFILE_DEBUG) {
+            Write-Host "[NMJ.Themes] Oh My Posh init failed: $_" -ForegroundColor DarkGray
+        }
+    }
 }
 
 function Set-Theme {
@@ -188,9 +280,9 @@ function Set-Theme {
 
     $resolved = Resolve-PoshThemePath $targetTheme
 
-    if (Get-Command oh-my-posh -ErrorAction SilentlyContinue) {
+    if (Get-NMJOhMyPoshExe) {
         try {
-            oh-my-posh init pwsh --config $resolved | Invoke-Expression
+            Initialize-NMJPoshPrompt -ThemeNameOrPath $resolved
         }
         catch {
             Write-Host "[NMJ.Themes] Failed to apply Oh My Posh theme '$resolved': $_" -ForegroundColor Yellow
@@ -218,12 +310,12 @@ function Invoke-FastFetch {
     #>
     if (Get-Command fastfetch -ErrorAction SilentlyContinue) {
         try {
-            if ($Global:CurrentFastFetchConfig -and (Test-Path $Global:CurrentFastFetchConfig)) {
-                fastfetch.exe --config $Global:CurrentFastFetchConfig @args
+            $ffArgs = @()
+            if ($Global:CurrentFastFetchConfig -and (Test-Path -LiteralPath $Global:CurrentFastFetchConfig)) {
+                $ffArgs += @('--config', $Global:CurrentFastFetchConfig)
             }
-            else {
-                fastfetch.exe @args
-            }
+            # this changed: Out-Host so the logo is visible during Import-Module / profile load
+            & fastfetch.exe @ffArgs @args | Out-Host
         }
         catch { }
     }
@@ -322,13 +414,18 @@ function Set-FastFetchIconTheme {
 Set-Alias -Name set-icon -Value Set-FastFetchIconTheme -Force -ErrorAction SilentlyContinue
 Set-Alias -Name Set-Icon -Value Set-FastFetchIconTheme -Force -ErrorAction SilentlyContinue
 
-# Apply saved icon theme on load and display FastFetch banner in interactive sessions
+# this changed: apply saved (or first) icon theme; banner is printed by the profile loader
+if ([string]::IsNullOrWhiteSpace($themeConfig.icon)) {
+    $themesRoot = Get-FastFetchThemesRoot
+    if (Test-Path -LiteralPath $themesRoot) {
+        $firstTheme = Get-ChildItem -Path $themesRoot -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($firstTheme) {
+            $themeConfig.icon = $firstTheme.Name
+        }
+    }
+}
 if (-not [string]::IsNullOrWhiteSpace($themeConfig.icon)) {
     Set-FastFetchIconTheme -Name $themeConfig.icon -Quiet
-    $isInteractive = $Host.UI.RawUI -and -not [Console]::IsOutputRedirected -and -not [Console]::IsInputRedirected
-    if ($isInteractive) {
-        Invoke-FastFetch
-    }
 }
 
 Export-ModuleMember -Function Set-Theme, Set-FastFetchIconTheme, Invoke-FastFetch, Set-FastFetchThemesFolder, Get-FastFetchThemesRoot -Alias ff, set-icon, Set-Icon

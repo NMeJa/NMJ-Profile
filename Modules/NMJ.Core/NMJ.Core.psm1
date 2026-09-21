@@ -16,6 +16,89 @@ function Get-NMJConfigPath {
     Join-Path $base $Name
 }
 
+function Test-NMJInteractiveHost {
+    <#
+    .SYNOPSIS
+        True for a real user console. Does not treat ConPTY/VS Code input redirect as non-interactive.
+    #>
+    if ($env:NMJ_SKIP_BANNER) { return $false }
+    if (-not [Environment]::UserInteractive) { return $false }
+    if ($Host.Name -eq 'ServerRemoteHost') { return $false }
+    if ([Console]::IsOutputRedirected) { return $false }
+    return $true
+}
+
+function Get-NMJCacheDir {
+    $dir = Join-Path $(if ($env:NMJ_CONFIG) { $env:NMJ_CONFIG } else { Join-Path $HOME '.nmj' }) 'cache'
+    if (-not (Test-Path -LiteralPath $dir)) {
+        try {
+            New-Item -Path $dir -ItemType Directory -Force | Out-Null
+        }
+        catch {
+            return $null
+        }
+    }
+    return $dir
+}
+
+function Get-NMJCachedInitPath {
+    <#
+    .SYNOPSIS
+        Returns a cached init script path if it is still newer than the tool binary; otherwise $null.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [string]$BinaryPath
+    )
+
+    $cacheDir = Get-NMJCacheDir
+    if (-not $cacheDir) { return $null }
+
+    $cacheFile = Join-Path $cacheDir "$Name.init.ps1"
+    if (-not (Test-Path -LiteralPath $cacheFile)) { return $null }
+
+    if ($BinaryPath -and (Test-Path -LiteralPath $BinaryPath)) {
+        $binTicks   = (Get-Item -LiteralPath $BinaryPath).LastWriteTimeUtc.Ticks
+        $cacheTicks = (Get-Item -LiteralPath $cacheFile).LastWriteTimeUtc.Ticks
+        if ($binTicks -gt $cacheTicks) { return $null }
+    }
+
+    return $cacheFile
+}
+
+function Set-NMJCachedInit {
+    <#
+    .SYNOPSIS
+        Writes an external init script to the NMJ cache and returns its path.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Script
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Script)) { return $null }
+
+    $cacheDir = Get-NMJCacheDir
+    if (-not $cacheDir) { return $null }
+
+    $cacheFile = Join-Path $cacheDir "$Name.init.ps1"
+    try {
+        Set-Content -LiteralPath $cacheFile -Value $Script -Encoding utf8NoBOM
+        return $cacheFile
+    }
+    catch {
+        return $null
+    }
+}
+
 function Expand-NMJPath {
     <#
     .SYNOPSIS
@@ -266,4 +349,4 @@ Tip: Use the built-in -? flag on any shortcut or command for detailed help.
 Set-Alias -Name myhelp  -Value Show-ProfileHelp -Force -ErrorAction SilentlyContinue
 Set-Alias -Name nmjhelp -Value Show-ProfileHelp -Force -ErrorAction SilentlyContinue
 
-Export-ModuleMember -Function Update-ProfileDependencies, Show-ProfileHelp, Get-NMJConfigPath, Expand-NMJPath, Write-NMJWarning, Assert-OllamaAvailable, Test-OllamaInstalled -Alias myhelp, nmjhelp
+Export-ModuleMember -Function Update-ProfileDependencies, Show-ProfileHelp, Get-NMJConfigPath, Expand-NMJPath, Write-NMJWarning, Assert-OllamaAvailable, Test-OllamaInstalled, Test-NMJInteractiveHost, Get-NMJCachedInitPath, Set-NMJCachedInit -Alias myhelp, nmjhelp
