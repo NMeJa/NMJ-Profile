@@ -70,7 +70,6 @@ function Get-FastFetchThemesRoot {
           3. $Global:FastFetchThemesRoot (session override)
           4. .nmj/Themes (under $env:NMJ_CONFIG or $HOME\.nmj\Themes)
           5. Local repository .nmj/Themes fallback
-          6. Legacy D:\OhMyPoshFastFetchThemes
     #>
     if ($env:FASTFETCH_THEMES_ROOT -and (Test-Path $env:FASTFETCH_THEMES_ROOT)) {
         return (Resolve-Path $env:FASTFETCH_THEMES_ROOT).Path
@@ -95,10 +94,6 @@ function Get-FastFetchThemesRoot {
     $homeNmjThemes = Join-Path $HOME '.nmj\Themes'
     if (Test-Path $homeNmjThemes) {
         return (Resolve-Path $homeNmjThemes).Path
-    }
-
-    if (Test-Path 'D:\OhMyPoshFastFetchThemes') {
-        return 'D:\OhMyPoshFastFetchThemes'
     }
 
     return $defaultNmjThemes
