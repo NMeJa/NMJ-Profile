@@ -322,9 +322,13 @@ function Set-FastFetchIconTheme {
 Set-Alias -Name set-icon -Value Set-FastFetchIconTheme -Force -ErrorAction SilentlyContinue
 Set-Alias -Name Set-Icon -Value Set-FastFetchIconTheme -Force -ErrorAction SilentlyContinue
 
-# Apply saved icon theme quietly on load
+# Apply saved icon theme on load and display FastFetch banner in interactive sessions
 if (-not [string]::IsNullOrWhiteSpace($themeConfig.icon)) {
     Set-FastFetchIconTheme -Name $themeConfig.icon -Quiet
+    $isInteractive = $Host.UI.RawUI -and -not [Console]::IsOutputRedirected -and -not [Console]::IsInputRedirected
+    if ($isInteractive) {
+        Invoke-FastFetch
+    }
 }
 
 Export-ModuleMember -Function Set-Theme, Set-FastFetchIconTheme, Invoke-FastFetch, Set-FastFetchThemesFolder, Get-FastFetchThemesRoot -Alias ff, set-icon, Set-Icon

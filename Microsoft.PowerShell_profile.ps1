@@ -60,6 +60,9 @@ if ($localShortcuts -and (Test-Path $localShortcuts)) {
     }
 }
 
+# Ensure PSReadLine is loaded globally before Oh My Posh initializes
+Import-Module PSReadLine -Global -ErrorAction SilentlyContinue
+
 # Modules in strict dependency order
 $modules = @(
     'NMJ.Core'
